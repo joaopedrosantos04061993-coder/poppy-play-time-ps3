@@ -185,7 +185,7 @@ jobs:
 
           CFLAGS := -O2 -Wall -Wextra -mcpu=cell -I$(PSL1GHT)/include -I$(PORTLIBS)/include -Isrc
           LDFLAGS := -L$(PSL1GHT)/lib -L$(PORTLIBS)/lib
-          LIBS := -lrsx -lgcm_sys -lsysutil -lio -lm -lc $(EXTRA_LIBS)
+          LIBS := $(TINY3D_LIB) -lrsx -lgcm_sys -lsysutil -lio -lm -lc $(EXTRA_LIBS)
 
           SRCS := $(wildcard src/*.c)
           OBJS := $(patsubst src/%.c,$(BUILD_DIR)/%.o,$(SRCS))
@@ -229,16 +229,20 @@ jobs:
           fi
 
           PL="$PS3DEV/portlibs/ppu/lib"
+          TINY3D_LIB=""
+          if [ -f "$PL/libtiny3d.a" ]; then
+            TINY3D_LIB="-ltiny3d"
+          fi
           EXTRA=""
-          for L in vorbisfile vorbis ogg FLAC mpg123 modplug mikmod tiny3d; do
+          for L in vorbisfile vorbis ogg FLAC mpg123 modplug mikmod; do
             if [ -f "$PL/lib$L.a" ]; then EXTRA="$EXTRA -l$L"; fi
           done
-          echo "EXTRA_LIBS=$EXTRA"
+          echo "TINY3D_LIB=$TINY3D_LIB EXTRA_LIBS=$EXTRA"
 
           if [ -f "Makefile.ps3" ]; then
-            make -f Makefile.ps3 pkg EXTRA_LIBS="$EXTRA" -k 2>&1 | tail -n 150
+            make -f Makefile.ps3 TINY3D_LIB="$TINY3D_LIB" EXTRA_LIBS="$EXTRA" -k 2>&1 | tail -n 150
           else
-            make pkg EXTRA_LIBS="$EXTRA" -k 2>&1 | tail -n 150
+            make pkg TINY3D_LIB="$TINY3D_LIB" EXTRA_LIBS="$EXTRA" -k 2>&1 | tail -n 150
           fi
 
           mkdir -p "$WORK_DIR/dist"
