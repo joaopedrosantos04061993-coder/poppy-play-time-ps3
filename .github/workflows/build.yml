@@ -174,6 +174,8 @@ jobs:
           MAKE_SELF ?= make_self
 
           TITLE_ID ?= POPT00001
+          CONTENT_ID ?= UP0001-$(TITLE_ID)_00-0000000000000001
+          APP_TITLE ?= Poppy Playtime PS3
           BUILD_DIR := build
           PKG_ROOT := $(BUILD_DIR)/pkg_dir
           USRDIR := $(PKG_ROOT)/USRDIR
@@ -181,6 +183,7 @@ jobs:
 
           TARGET_ELF := $(BUILD_DIR)/$(TITLE_ID).elf
           TARGET_SELF := $(USRDIR)/EBOOT.BIN
+          TARGET_SFO := $(PKG_ROOT)/PARAM.SFO
           TARGET_PKG := $(BUILD_DIR)/$(TITLE_ID)_PS3.pkg
 
           CFLAGS := -O2 -Wall -Wextra -mcpu=cell -I$(PSL1GHT)/include -I$(PORTLIBS)/include -Isrc
@@ -209,7 +212,15 @@ jobs:
           		cp -r "$(ASSETS_SRC)/." "$(USRDIR)/assets/"; \
           	fi
 
-          $(TARGET_SELF): $(TARGET_ELF) prepare_assets
+          $(TARGET_SFO): | prepare_assets
+          	@if command -v sfo.py >/dev/null 2>&1; then \
+          		sfo.py --title "$(APP_TITLE)" --appid "$(TITLE_ID)" --output "$(TARGET_SFO)" || true; \
+          	fi
+          	@if [ ! -f "$(TARGET_SFO)" ]; then \
+          		python3 -c 'import struct; keys=[b"BOOTABLE",b"CATEGORY",b"PS3_SYSTEM_VER",b"TITLE",b"TITLE_ID"]; vals=[(4,struct.pack("<I",1)),(2,b"HG\x00"),(2,b"01.8000\x00"),(2,b"Poppy Playtime PS3\x00"),(2,b"POPT00001\x00")]; entries=sorted(zip(keys,vals),key=lambda x:x[0]); ktab=b""; dtab=b""; idx=[]; k_off=0; d_off=0; [ (idx.append((len(ktab),e[1][0],len(e[1][1]),max(len(e[1][1]),4 if e[1][0]==4 else len(e[1][1])),d_off)), globals().update(ktab=ktab+e[0]+b"\x00", dtab=dtab+e[1][1].ljust(max(len(e[1][1]),4 if e[1][0]==4 else len(e[1][1])),b"\x00"), d_off=d_off+max(len(e[1][1]),4 if e[1][0]==4 else len(e[1][1])))) for e in entries ]; h_len=20+16*len(idx); hdr=struct.pack("<4sIIIIII",b"\x00PSF",0x0101,h_len,h_len+len(ktab),len(idx),0,0); itab=b"".join(struct.pack("<HHIII",ko,fmt,ulen,plen,doff) for ko,fmt,ulen,plen,doff in idx); open("$(TARGET_SFO)","wb").write(hdr+itab+ktab+dtab)'; \
+          	fi
+
+          $(TARGET_SELF): $(TARGET_ELF) prepare_assets $(TARGET_SFO)
           	$(STRIP) -s $(TARGET_ELF) -o $(BUILD_DIR)/stripped.elf
           	@if command -v $(MAKE_SELF) >/dev/null 2>&1; then \
           		$(MAKE_SELF) $(BUILD_DIR)/stripped.elf $(TARGET_SELF); \
@@ -217,12 +228,15 @@ jobs:
           		cp $(BUILD_DIR)/stripped.elf $(TARGET_SELF); \
           	fi
 
-          pkg: $(TARGET_SELF)
+          pkg: $(TARGET_SELF) $(TARGET_SFO)
           	@if command -v pkg.py >/dev/null 2>&1; then \
-          		pkg.py $(PKG_ROOT); \
+          		rm -rf "$(BUILD_DIR)/$(CONTENT_ID)"; \
+          		cp -r "$(PKG_ROOT)" "$(BUILD_DIR)/$(CONTENT_ID)"; \
+          		pkg.py "$(BUILD_DIR)/$(CONTENT_ID)" || pkg.py "$(PKG_ROOT)" || true; \
           		mv -f *.pkg "$(TARGET_PKG)" 2>/dev/null || true; \
+          		mv -f "$(BUILD_DIR)"/*.pkg "$(TARGET_PKG)" 2>/dev/null || true; \
           	elif command -v make_package_npdrm >/dev/null 2>&1; then \
-          		make_package_npdrm package.conf $(PKG_ROOT) || true; \
+          		make_package_npdrm package.conf "$(PKG_ROOT)" || true; \
           	else \
           		echo "AVISO: ferramenta de PKG nao encontrada na imagem; artefatos em $(PKG_ROOT)"; \
           	fi
