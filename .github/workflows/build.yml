@@ -56,25 +56,33 @@ jobs:
           #include <unistd.h>
           #include <malloc.h>
           #include <rsx/rsx.h>
+          #include <sysutil/video.h>
           #include <io/pad.h>
+          #include <tiny3d.h>
 
           static u32 *frame_buffers[2] = {NULL, NULL};
           static u32 frame_pitch = 0;
           static u32 screen_w = 1280;
           static u32 screen_h = 720;
           static int current_fb = 0;
-          static rsxContext *rsx_ctx = NULL;
+          static gcmContextData *gcm_ctx = NULL;
           static void *host_addr = NULL;
 
           static int init_video(void) {
               host_addr = memalign(1024 * 1024, 1024 * 1024);
               if (!host_addr) return -1;
-              if (rsxInit(&rsx_ctx, 64 * 1024, 1024 * 1024, host_addr) != 0) return -2;
+              if (rsxInit(&gcm_ctx, 64 * 1024, 1024 * 1024, host_addr) != 0) return -2;
+
+              videoState state;
+              if (videoGetState(0, 0, &state) != 0) return -3;
 
               videoResolution res;
-              if (videoGetResolution(VIDEO_RESOLUTION_720, &res) != 0 &&
-                  videoGetResolution(VIDEO_RESOLUTION_480, &res) != 0) {
-                  return -3;
+              u16 res_id = VIDEO_RESOLUTION_720;
+              if (videoGetResolution(res_id, &res) != 0) {
+                  res_id = VIDEO_RESOLUTION_480;
+                  if (videoGetResolution(res_id, &res) != 0) {
+                      return -4;
+                  }
               }
 
               screen_w = res.width;
@@ -82,25 +90,26 @@ jobs:
 
               videoConfiguration vconfig;
               memset(&vconfig, 0, sizeof(vconfig));
-              vconfig.resolution = res.id;
+              vconfig.resolution = res_id;
               vconfig.format = VIDEO_BUFFER_FORMAT_XRGB;
               vconfig.pitch = res.width * 4;
               vconfig.aspect = VIDEO_ASPECT_16_9;
 
-              if (videoConfigure(0, &vconfig, NULL, 0) != 0) return -4;
+              if (videoConfigure(0, &vconfig, NULL, 0) != 0) return -5;
+
               frame_pitch = vconfig.pitch;
               u32 fb_size = frame_pitch * res.height;
 
               for (int i = 0; i < 2; i++) {
                   frame_buffers[i] = (u32 *)rsxMemalign(64, fb_size);
-                  if (!frame_buffers[i]) return -5;
-                  memset(frame_buffers[i], 0xFF, fb_size);
+                  if (!frame_buffers[i]) return -6;
+                  memset(frame_buffers[i], 0x20, fb_size);
                   u32 offset = 0;
                   rsxAddressToOffset(frame_buffers[i], &offset);
-                  rsxSetDisplayBuffer(rsx_ctx, i, offset, frame_pitch, res.width, res.height);
+                  gcmSetDisplayBuffer(gcm_ctx, i, offset, frame_pitch, res.width, res.height);
               }
 
-              rsxSetFlipMode(rsx_ctx, GCM_FLIP_VSYNC);
+              gcmSetFlipMode(GCM_FLIP_VSYNC);
               return 0;
           }
 
@@ -116,7 +125,7 @@ jobs:
                   for (int i = 0; i < MAX_PADS; i++) {
                       if (padinfo.status[i]) {
                           ioPadGetData(i, &paddata);
-                          if (paddata.button[CELL_PAD_BTN_OFFSET_DIGITAL2] & CELL_PAD_CTRL_START) {
+                          if (paddata.button[PAD_BUTTON_OFFSET_DIGITAL2] & PAD_CTRL_START) {
                               goto done;
                           }
                       }
@@ -137,9 +146,9 @@ jobs:
                               fb[y * stride + x] = 0xFFF9AB00;
                           }
                       }
-                      rsxSetFlip(rsx_ctx, current_fb);
-                      rsxFlushBuffer(rsx_ctx);
-                      gcmSetWaitFlip(rsx_ctx);
+                      gcmSetFlip(gcm_ctx, current_fb);
+                      rsxFlushBuffer(gcm_ctx);
+                      gcmSetWaitFlip(gcm_ctx);
                       current_fb ^= 1;
                   }
 
@@ -176,7 +185,7 @@ jobs:
 
           CFLAGS := -O2 -Wall -Wextra -mcpu=cell -I$(PSL1GHT)/include -I$(PORTLIBS)/include -Isrc
           LDFLAGS := -L$(PSL1GHT)/lib -L$(PORTLIBS)/lib
-          LIBS := -lrsx -lgcm_sys -lsysutil -lio -lsysmodule -lm -lc $(EXTRA_LIBS)
+          LIBS := -lrsx -lgcm_sys -lsysutil -lio -lm -lc $(EXTRA_LIBS)
 
           SRCS := $(wildcard src/*.c)
           OBJS := $(patsubst src/%.c,$(BUILD_DIR)/%.o,$(SRCS))
