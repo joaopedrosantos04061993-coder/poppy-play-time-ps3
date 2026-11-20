@@ -13,8 +13,10 @@ jobs:
 
       - name: Extrair o zip
         run: |
-          for z in PoppyPlaytimePS3*.zip; do
-            [ -f "$z" ] && unzip -q -o "$z"
+          for z in PoppyPlaytimePS3*.zip *.zip; do
+            if [ -f "$z" ] && [[ "$z" != *"GitHub"* ]]; then
+              unzip -q -o "$z"
+            fi
           done
 
       - name: Criar script de build
@@ -25,20 +27,200 @@ jobs:
           export PSL1GHT="$PS3DEV/ppu"
           export PATH="$PATH:$PS3DEV/bin:$PS3DEV/ppu/bin:$PS3DEV/spu/bin"
 
-          # Entra na pasta do projeto se existir, ou usa a raiz
+          WORK_DIR="$PWD"
           if [ -d "PoppyPlaytimePS3" ]; then
             cd PoppyPlaytimePS3
+            WORK_DIR="$PWD"
           elif [ -d "PoppyPlaytimePS3_FACTORY_ASSETS_stage1" ]; then
             cd PoppyPlaytimePS3_FACTORY_ASSETS_stage1
+            WORK_DIR="$PWD"
           fi
 
-          # Prepara ativos e fonte otimizada caso o ZIP de ativos tenha sido extraido
-          mkdir -p src data/native_assets
+          mkdir -p src data/native_assets build/pkg_dir/USRDIR
+
+          # Copia ativos e carregador se vieram do ZIP otimizado ou do ZIP original
           if [ -d "factory_portable_opt" ]; then
             cp -r factory_portable_opt/. data/native_assets/
           fi
+          if [ -d "factory_portable" ]; then
+            cp -r factory_portable/. data/native_assets/
+          fi
           if [ -f "src_opt/factory_fluid_loader.c" ]; then
             cp src_opt/factory_fluid_loader.c src/factory_fluid_loader.c
+          fi
+
+          # Se nao existir main.c no projeto, cria um minimo com saida visual para evitar tela preta no HEN
+          if [ ! -f "src/main.c" ]; then
+            cat > src/main.c <<'MAIN_EOF'
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <unistd.h>
+          #include <malloc.h>
+          #include <sysmodule.h>
+          #include <rsx/rsx.h>
+          #include <io/pad.h>
+
+          static u32 *frame_buffers[2] = {NULL, NULL};
+          static u32 frame_pitch = 0;
+          static u32 screen_w = 1280;
+          static u32 screen_h = 720;
+          static int current_fb = 0;
+          static rsxContext *rsx_ctx = NULL;
+          static void *host_addr = NULL;
+
+          static int init_video(void) {
+              host_addr = memalign(1024 * 1024, 1024 * 1024);
+              if (!host_addr) return -1;
+              if (rsxInit(&rsx_ctx, 64 * 1024, 1024 * 1024, host_addr) != 0) return -2;
+
+              videoResolution res;
+              if (videoGetResolution(VIDEO_RESOLUTION_720, &res) != 0 &&
+                  videoGetResolution(VIDEO_RESOLUTION_480, &res) != 0) {
+                  return -3;
+              }
+
+              screen_w = res.width;
+              screen_h = res.height;
+
+              videoConfiguration vconfig;
+              memset(&vconfig, 0, sizeof(vconfig));
+              vconfig.resolution = res.id;
+              vconfig.format = VIDEO_BUFFER_FORMAT_XRGB;
+              vconfig.pitch = res.width * 4;
+              vconfig.aspect = VIDEO_ASPECT_16_9;
+
+              if (videoConfigure(0, &vconfig, NULL, 0) != 0) return -4;
+              frame_pitch = vconfig.pitch;
+              u32 fb_size = frame_pitch * res.height;
+
+              for (int i = 0; i < 2; i++) {
+                  frame_buffers[i] = (u32 *)rsxMemalign(64, fb_size);
+                  if (!frame_buffers[i]) return -5;
+                  memset(frame_buffers[i], 0xFF, fb_size);
+                  u32 offset = 0;
+                  rsxAddressToOffset(frame_buffers[i], &offset);
+                  rsxSetDisplayBuffer(rsx_ctx, i, offset, frame_pitch, res.width, res.height);
+              }
+
+              rsxSetFlipMode(rsx_ctx, GCM_FLIP_VSYNC);
+              return 0;
+          }
+
+          int main(void) {
+              ioPadInit(7);
+              int vid_ok = (init_video() == 0);
+              u32 tick = 0;
+
+              while (1) {
+                  padInfo padinfo;
+                  padData paddata;
+                  ioPadGetInfo(&padinfo);
+                  for (int i = 0; i < MAX_PADS; i++) {
+                      if (padinfo.status[i]) {
+                          ioPadGetData(i, &paddata);
+                          if (paddata.button[CELL_PAD_BTN_OFFSET_DIGITAL2] & CELL_PAD_CTRL_START) {
+                              goto done;
+                          }
+                      }
+                  }
+
+                  if (vid_ok && frame_buffers[current_fb]) {
+                      u32 *fb = frame_buffers[current_fb];
+                      u32 stride = frame_pitch / 4;
+                      for (u32 y = 0; y < screen_h; y++) {
+                          u32 color = (y < screen_h / 8) ? 0xFF1E8E3E : 0xFF202630;
+                          for (u32 x = 0; x < screen_w; x++) {
+                              fb[y * stride + x] = color;
+                          }
+                      }
+                      u32 box_x = (tick * 8) % (screen_w > 64 ? screen_w - 64 : 1);
+                      for (u32 y = screen_h / 4; y < screen_h / 4 + 48 && y < screen_h; y++) {
+                          for (u32 x = box_x; x < box_x + 48 && x < screen_w; x++) {
+                              fb[y * stride + x] = 0xFFF9AB00;
+                          }
+                      }
+                      rsxSetFlip(rsx_ctx, current_fb);
+                      rsxFlushBuffer(rsx_ctx);
+                      gcmSetWaitFlip(rsx_ctx);
+                      current_fb ^= 1;
+                  }
+
+                  tick++;
+                  usleep(16666);
+              }
+
+          done:
+              ioPadEnd();
+              return 0;
+          }
+          MAIN_EOF
+          fi
+
+          # Se nao existir Makefile nem Makefile.ps3, cria um padrao para compilar ELF e preparar PKG
+          if [ ! -f "Makefile" ] && [ ! -f "Makefile.ps3" ]; then
+            cat > Makefile <<'MK_EOF'
+          PS3DEV ?= /usr/local/ps3dev
+          PSL1GHT ?= $(PS3DEV)/ppu
+          PORTLIBS ?= $(PS3DEV)/portlibs/ppu
+
+          CC := $(PSL1GHT)/bin/ppu-gcc
+          STRIP := $(PSL1GHT)/bin/ppu-strip
+          MAKE_SELF ?= make_self
+
+          TITLE_ID ?= POPT00001
+          BUILD_DIR := build
+          PKG_ROOT := $(BUILD_DIR)/pkg_dir
+          USRDIR := $(PKG_ROOT)/USRDIR
+          ASSETS_SRC := data/native_assets
+
+          TARGET_ELF := $(BUILD_DIR)/$(TITLE_ID).elf
+          TARGET_SELF := $(USRDIR)/EBOOT.BIN
+          TARGET_PKG := $(BUILD_DIR)/$(TITLE_ID)_PS3.pkg
+
+          CFLAGS := -O2 -Wall -Wextra -mcpu=cell -I$(PSL1GHT)/include -I$(PORTLIBS)/include -Isrc
+          LDFLAGS := -L$(PSL1GHT)/lib -L$(PORTLIBS)/lib
+          LIBS := -lrsx -lgcm_sys -lsysutil -lio -lsysmodule -lm -lc $(EXTRA_LIBS)
+
+          SRCS := $(wildcard src/*.c)
+          OBJS := $(patsubst src/%.c,$(BUILD_DIR)/%.o,$(SRCS))
+
+          all: pkg
+
+          $(BUILD_DIR):
+          	mkdir -p $(BUILD_DIR)
+
+          $(BUILD_DIR)/%.o: src/%.c | $(BUILD_DIR)
+          	@mkdir -p $(dir $@)
+          	$(CC) $(CFLAGS) -c $< -o $@
+
+          $(TARGET_ELF): $(OBJS)
+          	$(CC) $(CFLAGS) $(OBJS) $(LDFLAGS) $(LIBS) -o $@
+
+          prepare_assets:
+          	@mkdir -p $(USRDIR)
+          	@if [ -d "$(ASSETS_SRC)" ]; then \
+          		mkdir -p "$(USRDIR)/assets"; \
+          		cp -r "$(ASSETS_SRC)/." "$(USRDIR)/assets/"; \
+          	fi
+
+          $(TARGET_SELF): $(TARGET_ELF) prepare_assets
+          	$(STRIP) -s $(TARGET_ELF) -o $(BUILD_DIR)/stripped.elf
+          	@if command -v $(MAKE_SELF) >/dev/null 2>&1; then \
+          		$(MAKE_SELF) $(BUILD_DIR)/stripped.elf $(TARGET_SELF); \
+          	else \
+          		cp $(BUILD_DIR)/stripped.elf $(TARGET_SELF); \
+          	fi
+
+          pkg: $(TARGET_SELF)
+          	@if command -v pkg.py >/dev/null 2>&1; then \
+          		pkg.py $(PKG_ROOT) $(TARGET_PKG); \
+          	elif command -v make_package_npdrm >/dev/null 2>&1; then \
+          		make_package_npdrm package.conf $(PKG_ROOT) || true; \
+          	else \
+          		echo "AVISO: ferramenta de PKG nao encontrada na imagem; artefatos em $(PKG_ROOT)"; \
+          	fi
+          MK_EOF
           fi
 
           PL="$PS3DEV/portlibs/ppu/lib"
@@ -50,13 +232,13 @@ jobs:
 
           if [ -f "Makefile.ps3" ]; then
             make -f Makefile.ps3 pkg EXTRA_LIBS="$EXTRA" -k 2>&1 | tail -n 150
-          elif [ -f "Makefile" ]; then
-            make pkg EXTRA_LIBS="$EXTRA" -k 2>&1 | tail -n 150 || make all EXTRA_LIBS="$EXTRA" -k 2>&1 | tail -n 150
+          else
+            make pkg EXTRA_LIBS="$EXTRA" -k 2>&1 | tail -n 150
           fi
 
-          mkdir -p "$OLDPWD/dist"
-          find . -maxdepth 4 -name "*.pkg" -exec cp {} "$OLDPWD/dist/" \;
-          ls -l "$OLDPWD/dist"
+          mkdir -p "$WORK_DIR/dist"
+          find "$WORK_DIR" -maxdepth 4 -name "*.pkg" -exec cp {} "$WORK_DIR/dist/" \;
+          ls -la "$WORK_DIR/dist" || true
           EOF
 
       - name: Compilar dentro da imagem ps3dev com SDL2
@@ -67,3 +249,4 @@ jobs:
         with:
           name: PoppyPlaytimePS3-pkg
           path: dist/*.pkg
+          if-no-files-found: warn
