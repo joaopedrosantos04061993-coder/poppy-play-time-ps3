@@ -11,12 +11,10 @@ jobs:
       - name: Baixar o projeto
         uses: actions/checkout@v4
 
-      - name: Extrair o zip
+      - name: Extrair os zips
         run: |
-          for z in PoppyPlaytimePS3*.zip *.zip; do
-            if [ -f "$z" ] && [[ "$z" != *"GitHub"* ]]; then
-              unzip -q -o "$z"
-            fi
+          for z in *.zip; do
+            [ -f "$z" ] && unzip -q -o "$z"
           done
 
       - name: Criar script de build
@@ -24,30 +22,23 @@ jobs:
           cat > build.sh <<'EOF'
           set -e
           : "${PS3DEV:=/usr/local/ps3dev}"; export PS3DEV
-          export PSL1GHT="$PS3DEV/ppu"
+          export PSL1GHT="$PS3DEV"
           export PATH="$PATH:$PS3DEV/bin:$PS3DEV/ppu/bin:$PS3DEV/spu/bin"
 
-          WORK_DIR="$PWD"
-          if [ -d "PoppyPlaytimePS3" ]; then
-            cd PoppyPlaytimePS3
-            WORK_DIR="$PWD"
-          elif [ -d "PoppyPlaytimePS3_FACTORY_ASSETS_stage1" ]; then
-            cd PoppyPlaytimePS3_FACTORY_ASSETS_stage1
-            WORK_DIR="$PWD"
-          fi
+          echo "=== Diagnostico do SDK ==="
+          ls "$PS3DEV" || true
+          find "$PS3DEV" -maxdepth 3 \( -name ppu_rules -o -name base_rules -o -name sfo.xml \) 2>/dev/null || true
+          echo "=========================="
 
-          mkdir -p src data/native_assets build/pkg_dir/USRDIR
+          mkdir -p src data/native_assets
 
-          if [ -d "factory_portable_opt" ]; then
-            cp -r factory_portable_opt/. data/native_assets/
-          fi
-          if [ -d "factory_portable" ]; then
-            cp -r factory_portable/. data/native_assets/
-          fi
-          if [ -f "src_opt/factory_fluid_loader.c" ]; then
-            cp src_opt/factory_fluid_loader.c src/factory_fluid_loader.c
-          fi
+          # Ativos otimizados (se vieram do zip)
+          D=$(find . -maxdepth 3 -type d -name factory_portable_opt | head -1)
+          if [ -n "$D" ]; then cp -r "$D"/. data/native_assets/; fi
+          L=$(find . -maxdepth 3 -type f -name factory_fluid_loader.c | head -1)
+          if [ -n "$L" ] && [ ! -f src/factory_fluid_loader.c ]; then cp "$L" src/factory_fluid_loader.c; fi
 
+          # main.c minimo de diagnostico (so cria se nao existir)
           if [ ! -f "src/main.c" ]; then
             cat > src/main.c <<'MAIN_EOF'
           #include <stdio.h>
@@ -163,106 +154,26 @@ jobs:
           MAIN_EOF
           fi
 
-          if [ ! -f "Makefile" ] && [ ! -f "Makefile.ps3" ]; then
-            cat > Makefile <<'MK_EOF'
-          PS3DEV ?= /usr/local/ps3dev
-          PSL1GHT ?= $(PS3DEV)/ppu
-          PORTLIBS ?= $(PS3DEV)/portlibs/ppu
-
-          CC := $(PSL1GHT)/bin/ppu-gcc
-          STRIP := $(PSL1GHT)/bin/ppu-strip
-          MAKE_SELF ?= make_self
-
-          TITLE_ID ?= POPT00001
-          CONTENT_ID ?= UP0001-$(TITLE_ID)_00-0000000000000001
-          APP_TITLE ?= Poppy Playtime PS3
-          BUILD_DIR := build
-          PKG_ROOT := $(BUILD_DIR)/pkg_dir
-          USRDIR := $(PKG_ROOT)/USRDIR
-          ASSETS_SRC := data/native_assets
-
-          TARGET_ELF := $(BUILD_DIR)/$(TITLE_ID).elf
-          TARGET_SELF := $(USRDIR)/EBOOT.BIN
-          TARGET_SFO := $(PKG_ROOT)/PARAM.SFO
-          TARGET_PKG := $(BUILD_DIR)/$(CONTENT_ID).pkg
-
-          CFLAGS := -O2 -Wall -Wextra -mcpu=cell -I$(PSL1GHT)/include -I$(PORTLIBS)/include -Isrc
-          LDFLAGS := -L$(PSL1GHT)/lib -L$(PORTLIBS)/lib
-          LIBS := $(TINY3D_LIB) -lrsx -lgcm_sys -lsysutil -lio -lm -lc $(EXTRA_LIBS)
-
-          SRCS := $(wildcard src/*.c)
-          OBJS := $(patsubst src/%.c,$(BUILD_DIR)/%.o,$(SRCS))
-
-          all: pkg
-
-          $(BUILD_DIR):
-          	mkdir -p $(BUILD_DIR)
-
-          $(BUILD_DIR)/%.o: src/%.c | $(BUILD_DIR)
-          	@mkdir -p $(dir $@)
-          	$(CC) $(CFLAGS) -c $< -o $@
-
-          $(TARGET_ELF): $(OBJS)
-          	$(CC) $(CFLAGS) $(OBJS) $(LDFLAGS) $(LIBS) -o $@
-
-          prepare_assets:
-          	@mkdir -p $(USRDIR)
-          	@if [ -d "$(ASSETS_SRC)" ]; then \
-          		mkdir -p "$(USRDIR)/assets"; \
-          		cp -r "$(ASSETS_SRC)/." "$(USRDIR)/assets/"; \
-          	fi
-
-          $(TARGET_SFO): | prepare_assets
-          	@if [ ! -f "$(TARGET_SFO)" ]; then \
-          		python3 -c 'import struct; keys=[b"BOOTABLE",b"CATEGORY",b"PS3_SYSTEM_VER",b"TITLE",b"TITLE_ID"]; vals=[(4,struct.pack("<I",1)),(2,b"HG\x00"),(2,b"01.8000\x00"),(2,b"Poppy Playtime PS3\x00"),(2,b"POPT00001\x00")]; entries=sorted(zip(keys,vals),key=lambda x:x[0]); ktab=b""; dtab=b""; idx=[]; d_off=0; [ (idx.append((len(ktab),e[1][0],len(e[1][1]),max(len(e[1][1]),4 if e[1][0]==4 else len(e[1][1])),d_off)), globals().update(ktab=ktab+e[0]+b"\x00", dtab=dtab+e[1][1].ljust(max(len(e[1][1]),4 if e[1][0]==4 else len(e[1][1])),b"\x00"), d_off=d_off+max(len(e[1][1]),4 if e[1][0]==4 else len(e[1][1]))) for e in entries ]; h_len=20+16*len(idx); hdr=struct.pack("<4sIIIIII",b"\x00PSF",0x0101,h_len,h_len+len(ktab),len(idx),0,0); itab=b"".join(struct.pack("<HHIII",ko,fmt,ulen,plen,doff) for ko,fmt,ulen,plen,doff in idx); open("$(TARGET_SFO)","wb").write(hdr+itab+ktab+dtab)'; \
-          	fi
-
-          $(TARGET_SELF): $(TARGET_ELF) prepare_assets $(TARGET_SFO)
-          	$(STRIP) -s $(TARGET_ELF) -o $(BUILD_DIR)/stripped.elf
-          	@if command -v $(MAKE_SELF) >/dev/null 2>&1; then \
-          		$(MAKE_SELF) $(BUILD_DIR)/stripped.elf $(TARGET_SELF); \
-          	else \
-          		cp $(BUILD_DIR)/stripped.elf $(TARGET_SELF); \
-          	fi
-
-          pkg: $(TARGET_SELF) $(TARGET_SFO)
-          	@rm -rf "$(BUILD_DIR)/$(CONTENT_ID)"
-          	@cp -r "$(PKG_ROOT)" "$(BUILD_DIR)/$(CONTENT_ID)"
-          	@if command -v pkg.py >/dev/null 2>&1; then \
-          		pkg.py "$(BUILD_DIR)/$(CONTENT_ID)" || true; \
-          		find "$(BUILD_DIR)" /build -maxdepth 3 -name "*.pkg" -exec cp -f {} "$(BUILD_DIR)/" \; 2>/dev/null || true; \
-          	elif command -v make_package_npdrm >/dev/null 2>&1; then \
-          		make_package_npdrm package.conf "$(PKG_ROOT)" || true; \
-          	else \
-          		echo "AVISO: ferramenta de PKG nao encontrada na imagem; artefatos em $(PKG_ROOT)"; \
-          	fi
-          	@ls -la "$(BUILD_DIR)" || true
-          MK_EOF
+          # sfo.xml: usa o do repo, senao copia do SDK da imagem
+          if [ ! -f sfo.xml ]; then
+            SFO=$(find "$PS3DEV" -name sfo.xml 2>/dev/null | head -1)
+            echo "sfo.xml encontrado em: $SFO"
+            if [ -n "$SFO" ]; then cp "$SFO" sfo.xml; fi
           fi
 
-          PL="$PS3DEV/portlibs/ppu/lib"
-          TINY3D_LIB=""
-          if [ -f "$PL/libtiny3d.a" ]; then
-            TINY3D_LIB="-ltiny3d"
-          fi
-          EXTRA=""
-          for L in vorbisfile vorbis ogg FLAC mpg123 modplug mikmod; do
-            if [ -f "$PL/lib$L.a" ]; then EXTRA="$EXTRA -l$L"; fi
-          done
-          echo "TINY3D_LIB=$TINY3D_LIB EXTRA_LIBS=$EXTRA"
-
-          if [ -f "Makefile.ps3" ]; then
-            make -f Makefile.ps3 TINY3D_LIB="$TINY3D_LIB" EXTRA_LIBS="$EXTRA" -k 2>&1 | tail -n 150
-          else
-            make pkg TINY3D_LIB="$TINY3D_LIB" EXTRA_LIBS="$EXTRA" -k 2>&1 | tail -n 150
+          if [ ! -f Makefile ]; then
+            echo "ERRO: Makefile nao encontrado na raiz do repositorio"
+            exit 1
           fi
 
-          mkdir -p "$WORK_DIR/dist"
-          find "$WORK_DIR" /build -maxdepth 4 -name "*.pkg" -exec cp {} "$WORK_DIR/dist/" \; 2>/dev/null || true
-          ls -la "$WORK_DIR/dist" || true
+          make pkg 2>&1 | tail -n 100
+
+          mkdir -p dist
+          find . -maxdepth 3 -name "*.pkg" -not -path "./dist/*" -exec cp {} dist/ \;
+          ls -la dist || true
           EOF
 
-      - name: Compilar dentro da imagem ps3dev com SDL2
+      - name: Compilar dentro da imagem ps3dev
         run: docker run --rm -v "$PWD":/build -w /build hldtux/ps3dev-sdl2:latest sh build.sh
 
       - name: Enviar o .pkg
