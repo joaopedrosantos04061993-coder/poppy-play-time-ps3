@@ -219,7 +219,8 @@ jobs:
 
           pkg: $(TARGET_SELF)
           	@if command -v pkg.py >/dev/null 2>&1; then \
-          		pkg.py $(PKG_ROOT) $(TARGET_PKG); \
+          		pkg.py $(PKG_ROOT); \
+          		mv -f *.pkg "$(TARGET_PKG)" 2>/dev/null || true; \
           	elif command -v make_package_npdrm >/dev/null 2>&1; then \
           		make_package_npdrm package.conf $(PKG_ROOT) || true; \
           	else \
