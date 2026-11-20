@@ -63,4 +63,131 @@ jobs:
               if (videoGetState(0, 0, &state) != 0) return -3;
 
               videoResolution res;
-              u16 res_id =
+              u16 res_id = VIDEO_RESOLUTION_720;
+              if (videoGetResolution(res_id, &res) != 0) {
+                  res_id = VIDEO_RESOLUTION_480;
+                  if (videoGetResolution(res_id, &res) != 0) {
+                      return -4;
+                  }
+              }
+
+              screen_w = res.width;
+              screen_h = res.height;
+
+              videoConfiguration vconfig;
+              memset(&vconfig, 0, sizeof(vconfig));
+              vconfig.resolution = res_id;
+              vconfig.format = VIDEO_BUFFER_FORMAT_XRGB;
+              vconfig.pitch = res.width * 4;
+              vconfig.aspect = VIDEO_ASPECT_16_9;
+
+              if (videoConfigure(0, &vconfig, NULL, 0) != 0) return -5;
+
+              frame_pitch = vconfig.pitch;
+              u32 fb_size = frame_pitch * res.height;
+
+              for (int i = 0; i < 2; i++) {
+                  frame_buffers[i] = (u32 *)rsxMemalign(64, fb_size);
+                  if (!frame_buffers[i]) return -6;
+                  memset(frame_buffers[i], 0x20, fb_size);
+                  u32 offset = 0;
+                  rsxAddressToOffset(frame_buffers[i], &offset);
+                  gcmSetDisplayBuffer((u8)i, offset, frame_pitch, res.width, res.height);
+              }
+
+              gcmSetFlipMode(GCM_FLIP_VSYNC);
+              return 0;
+          }
+
+          int main(void) {
+              ioPadInit(7);
+              int vid_ok = (init_video() == 0);
+              u32 tick = 0;
+
+              while (1) {
+                  padInfo padinfo;
+                  padData paddata;
+                  ioPadGetInfo(&padinfo);
+                  for (int i = 0; i < MAX_PADS; i++) {
+                      if (padinfo.status[i]) {
+                          ioPadGetData(i, &paddata);
+                          if (paddata.button[PAD_BUTTON_OFFSET_DIGITAL2] & PAD_CTRL_START) {
+                              goto done;
+                          }
+                      }
+                  }
+
+                  if (vid_ok && frame_buffers[current_fb]) {
+                      u32 *fb = frame_buffers[current_fb];
+                      u32 stride = frame_pitch / 4;
+                      for (u32 y = 0; y < screen_h; y++) {
+                          u32 color = (y < screen_h / 8) ? 0xFF1E8E3E : 0xFF202630;
+                          for (u32 x = 0; x < screen_w; x++) {
+                              fb[y * stride + x] = color;
+                          }
+                      }
+                      u32 box_x = (tick * 8) % (screen_w > 64 ? screen_w - 64 : 1);
+                      for (u32 y = screen_h / 4; y < screen_h / 4 + 48 && y < screen_h; y++) {
+                          for (u32 x = box_x; x < box_x + 48 && x < screen_w; x++) {
+                              fb[y * stride + x] = 0xFFF9AB00;
+                          }
+                      }
+                      gcmSetFlip(gcm_ctx, current_fb);
+                      rsxFlushBuffer(gcm_ctx);
+                      gcmSetWaitFlip(gcm_ctx);
+                      current_fb ^= 1;
+                  }
+
+                  tick++;
+                  usleep(16666);
+              }
+
+          done:
+              ioPadEnd();
+              return 0;
+          }
+          MAIN_EOF
+          fi
+
+          # sfo.xml: usa o do repo, senao copia do SDK da imagem
+          if [ ! -f sfo.xml ]; then
+            SFO=$(find "$PS3DEV" -name sfo.xml 2>/dev/null | head -1)
+            echo "sfo.xml encontrado em: $SFO"
+            if [ -n "$SFO" ]; then cp "$SFO" sfo.xml; fi
+          fi
+
+          # gera um ICON0.PNG 320x176 simples se nao existir
+          if [ ! -f ICON0.PNG ]; then
+            python3 - <<'PY'
+          import zlib, struct
+          w, h = 320, 176
+          raw = b"".join(b"\x00" + b"\x1e\x8e\x3e" * w for _ in range(h))
+          def chunk(t, d):
+              c = struct.pack(">I", len(d)) + t + d
+              return c + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+          png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+          open("ICON0.PNG", "wb").write(png)
+          PY
+          fi
+
+          if [ ! -f Makefile ]; then
+            echo "ERRO: Makefile nao encontrado na raiz do repositorio"
+            exit 1
+          fi
+
+          make pkg 2>&1 | tail -n 100
+
+          mkdir -p dist
+          find . -maxdepth 3 -name "*.pkg" -not -path "./dist/*" -exec cp {} dist/ \;
+          ls -la dist || true
+          EOF
+
+      - name: Compilar dentro da imagem ps3dev
+        run: docker run --rm -v "$PWD":/build -w /build hldtux/ps3dev-sdl2:latest sh build.sh
+
+      - name: Enviar o .pkg
+        uses: actions/upload-artifact@v4
+        with:
+          name: PoppyPlaytimePS3-pkg
+          path: dist/*.pkg
+          if-no-files-found: warn
