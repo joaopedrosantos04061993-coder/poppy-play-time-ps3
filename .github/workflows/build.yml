@@ -184,7 +184,7 @@ jobs:
           TARGET_ELF := $(BUILD_DIR)/$(TITLE_ID).elf
           TARGET_SELF := $(USRDIR)/EBOOT.BIN
           TARGET_SFO := $(PKG_ROOT)/PARAM.SFO
-          TARGET_PKG := $(BUILD_DIR)/$(TITLE_ID)_PS3.pkg
+          TARGET_PKG := $(BUILD_DIR)/$(CONTENT_ID).pkg
 
           CFLAGS := -O2 -Wall -Wextra -mcpu=cell -I$(PSL1GHT)/include -I$(PORTLIBS)/include -Isrc
           LDFLAGS := -L$(PSL1GHT)/lib -L$(PORTLIBS)/lib
@@ -213,11 +213,8 @@ jobs:
           	fi
 
           $(TARGET_SFO): | prepare_assets
-          	@if command -v sfo.py >/dev/null 2>&1; then \
-          		sfo.py --title "$(APP_TITLE)" --appid "$(TITLE_ID)" --output "$(TARGET_SFO)" || true; \
-          	fi
           	@if [ ! -f "$(TARGET_SFO)" ]; then \
-          		python3 -c 'import struct; keys=[b"BOOTABLE",b"CATEGORY",b"PS3_SYSTEM_VER",b"TITLE",b"TITLE_ID"]; vals=[(4,struct.pack("<I",1)),(2,b"HG\x00"),(2,b"01.8000\x00"),(2,b"Poppy Playtime PS3\x00"),(2,b"POPT00001\x00")]; entries=sorted(zip(keys,vals),key=lambda x:x[0]); ktab=b""; dtab=b""; idx=[]; k_off=0; d_off=0; [ (idx.append((len(ktab),e[1][0],len(e[1][1]),max(len(e[1][1]),4 if e[1][0]==4 else len(e[1][1])),d_off)), globals().update(ktab=ktab+e[0]+b"\x00", dtab=dtab+e[1][1].ljust(max(len(e[1][1]),4 if e[1][0]==4 else len(e[1][1])),b"\x00"), d_off=d_off+max(len(e[1][1]),4 if e[1][0]==4 else len(e[1][1])))) for e in entries ]; h_len=20+16*len(idx); hdr=struct.pack("<4sIIIIII",b"\x00PSF",0x0101,h_len,h_len+len(ktab),len(idx),0,0); itab=b"".join(struct.pack("<HHIII",ko,fmt,ulen,plen,doff) for ko,fmt,ulen,plen,doff in idx); open("$(TARGET_SFO)","wb").write(hdr+itab+ktab+dtab)'; \
+          		python3 -c 'import struct; keys=[b"BOOTABLE",b"CATEGORY",b"PS3_SYSTEM_VER",b"TITLE",b"TITLE_ID"]; vals=[(4,struct.pack("<I",1)),(2,b"HG\x00"),(2,b"01.8000\x00"),(2,b"Poppy Playtime PS3\x00"),(2,b"POPT00001\x00")]; entries=sorted(zip(keys,vals),key=lambda x:x[0]); ktab=b""; dtab=b""; idx=[]; d_off=0; [ (idx.append((len(ktab),e[1][0],len(e[1][1]),max(len(e[1][1]),4 if e[1][0]==4 else len(e[1][1])),d_off)), globals().update(ktab=ktab+e[0]+b"\x00", dtab=dtab+e[1][1].ljust(max(len(e[1][1]),4 if e[1][0]==4 else len(e[1][1])),b"\x00"), d_off=d_off+max(len(e[1][1]),4 if e[1][0]==4 else len(e[1][1]))) for e in entries ]; h_len=20+16*len(idx); hdr=struct.pack("<4sIIIIII",b"\x00PSF",0x0101,h_len,h_len+len(ktab),len(idx),0,0); itab=b"".join(struct.pack("<HHIII",ko,fmt,ulen,plen,doff) for ko,fmt,ulen,plen,doff in idx); open("$(TARGET_SFO)","wb").write(hdr+itab+ktab+dtab)'; \
           	fi
 
           $(TARGET_SELF): $(TARGET_ELF) prepare_assets $(TARGET_SFO)
@@ -229,17 +226,17 @@ jobs:
           	fi
 
           pkg: $(TARGET_SELF) $(TARGET_SFO)
+          	@rm -rf "$(BUILD_DIR)/$(CONTENT_ID)"
+          	@cp -r "$(PKG_ROOT)" "$(BUILD_DIR)/$(CONTENT_ID)"
           	@if command -v pkg.py >/dev/null 2>&1; then \
-          		rm -rf "$(BUILD_DIR)/$(CONTENT_ID)"; \
-          		cp -r "$(PKG_ROOT)" "$(BUILD_DIR)/$(CONTENT_ID)"; \
-          		pkg.py "$(BUILD_DIR)/$(CONTENT_ID)" || pkg.py "$(PKG_ROOT)" || true; \
-          		mv -f *.pkg "$(TARGET_PKG)" 2>/dev/null || true; \
-          		mv -f "$(BUILD_DIR)"/*.pkg "$(TARGET_PKG)" 2>/dev/null || true; \
+          		pkg.py "$(BUILD_DIR)/$(CONTENT_ID)" || true; \
+          		find "$(BUILD_DIR)" /build -maxdepth 3 -name "*.pkg" -exec cp -f {} "$(BUILD_DIR)/" \; 2>/dev/null || true; \
           	elif command -v make_package_npdrm >/dev/null 2>&1; then \
           		make_package_npdrm package.conf "$(PKG_ROOT)" || true; \
           	else \
           		echo "AVISO: ferramenta de PKG nao encontrada na imagem; artefatos em $(PKG_ROOT)"; \
           	fi
+          	@ls -la "$(BUILD_DIR)" || true
           MK_EOF
           fi
 
@@ -261,7 +258,7 @@ jobs:
           fi
 
           mkdir -p "$WORK_DIR/dist"
-          find "$WORK_DIR" -maxdepth 4 -name "*.pkg" -exec cp {} "$WORK_DIR/dist/" \;
+          find "$WORK_DIR" /build -maxdepth 4 -name "*.pkg" -exec cp {} "$WORK_DIR/dist/" \; 2>/dev/null || true
           ls -la "$WORK_DIR/dist" || true
           EOF
 
