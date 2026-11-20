@@ -1,0 +1,69 @@
+name: Build Poppy Playtime PS3 PKG
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar o projeto
+        uses: actions/checkout@v4
+
+      - name: Extrair o zip
+        run: |
+          for z in PoppyPlaytimePS3*.zip; do
+            [ -f "$z" ] && unzip -q -o "$z"
+          done
+
+      - name: Criar script de build
+        run: |
+          cat > build.sh <<'EOF'
+          set -e
+          : "${PS3DEV:=/usr/local/ps3dev}"; export PS3DEV
+          export PSL1GHT="$PS3DEV/ppu"
+          export PATH="$PATH:$PS3DEV/bin:$PS3DEV/ppu/bin:$PS3DEV/spu/bin"
+
+          # Entra na pasta do projeto se existir, ou usa a raiz
+          if [ -d "PoppyPlaytimePS3" ]; then
+            cd PoppyPlaytimePS3
+          elif [ -d "PoppyPlaytimePS3_FACTORY_ASSETS_stage1" ]; then
+            cd PoppyPlaytimePS3_FACTORY_ASSETS_stage1
+          fi
+
+          # Prepara ativos e fonte otimizada caso o ZIP de ativos tenha sido extraido
+          mkdir -p src data/native_assets
+          if [ -d "factory_portable_opt" ]; then
+            cp -r factory_portable_opt/. data/native_assets/
+          fi
+          if [ -f "src_opt/factory_fluid_loader.c" ]; then
+            cp src_opt/factory_fluid_loader.c src/factory_fluid_loader.c
+          fi
+
+          PL="$PS3DEV/portlibs/ppu/lib"
+          EXTRA=""
+          for L in vorbisfile vorbis ogg FLAC mpg123 modplug mikmod tiny3d; do
+            if [ -f "$PL/lib$L.a" ]; then EXTRA="$EXTRA -l$L"; fi
+          done
+          echo "EXTRA_LIBS=$EXTRA"
+
+          if [ -f "Makefile.ps3" ]; then
+            make -f Makefile.ps3 pkg EXTRA_LIBS="$EXTRA" -k 2>&1 | tail -n 150
+          elif [ -f "Makefile" ]; then
+            make pkg EXTRA_LIBS="$EXTRA" -k 2>&1 | tail -n 150 || make all EXTRA_LIBS="$EXTRA" -k 2>&1 | tail -n 150
+          fi
+
+          mkdir -p "$OLDPWD/dist"
+          find . -maxdepth 4 -name "*.pkg" -exec cp {} "$OLDPWD/dist/" \;
+          ls -l "$OLDPWD/dist"
+          EOF
+
+      - name: Compilar dentro da imagem ps3dev com SDL2
+        run: docker run --rm -v "$PWD":/build -w /build hldtux/ps3dev-sdl2:latest sh build.sh
+
+      - name: Enviar o .pkg
+        uses: actions/upload-artifact@v4
+        with:
+          name: PoppyPlaytimePS3-pkg
+          path: dist/*.pkg
