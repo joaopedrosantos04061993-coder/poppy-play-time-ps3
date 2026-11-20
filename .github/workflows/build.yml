@@ -106,7 +106,7 @@ jobs:
                   memset(frame_buffers[i], 0x20, fb_size);
                   u32 offset = 0;
                   rsxAddressToOffset(frame_buffers[i], &offset);
-                  gcmSetDisplayBuffer(gcm_ctx, i, offset, frame_pitch, res.width, res.height);
+                  gcmSetDisplayBuffer((u8)i, offset, frame_pitch, res.width, res.height);
               }
 
               gcmSetFlipMode(GCM_FLIP_VSYNC);
