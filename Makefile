@@ -22,8 +22,8 @@ SFOXML    := $(CURDIR)/sfo.xml
 ICON0     := $(CURDIR)/ICON0.PNG
 
 PORTLIBS  := $(PS3DEV)/portlibs/ppu
-CFLAGS    = -O2 -Wall -mcpu=cell $(MACHDEP) -I$(PORTLIBS)/include -Isrc
-LDFLAGS   = $(MACHDEP) -L$(PORTLIBS)/lib
+CFLAGS    = -O2 -Wall -mcpu=cell $(MACHDEP) -I$(PS3DEV)/ppu/include -I$(PORTLIBS)/include -Isrc
+LDFLAGS   = $(MACHDEP) -L$(PS3DEV)/ppu/lib -L$(PORTLIBS)/lib
 LIBS      := -ltiny3d -lrsx -lgcm_sys -lsysutil -lio -lm
 
 .PHONY: all pkg clean
