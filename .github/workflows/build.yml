@@ -27,13 +27,17 @@ jobs:
 
           mkdir -p src data/native_assets
 
-          # Ativos otimizados (se vieram do zip)
+          # Copia ativos otimizados (se vieram do zip)
           D=$(find . -maxdepth 3 -type d -name factory_portable_opt | head -1)
-          if [ -n "$D" ]; then cp -r "$D"/. data/native_assets/; fi
-          L=$(find . -maxdepth 3 -type f -name factory_fluid_loader.c | head -1)
-          if [ -n "$L" ] && [ ! -f src/factory_fluid_loader.c ]; then cp "$L" src/factory_fluid_loader.c; fi
+          if [ -n "$D" ]; then
+            cp -r "$D"/. data/native_assets/
+          fi
 
-          # main.c minimo de diagnostico (so cria se nao existir)
+          L=$(find . -maxdepth 3 -type f -name factory_fluid_loader.c | head -1)
+          if [ -n "$L" ] && [ ! -f src/factory_fluid_loader.c ]; then
+            cp "$L" src/factory_fluid_loader.c
+          fi
+
           if [ ! -f "src/main.c" ]; then
             cat > src/main.c <<'MAIN_EOF'
           #include <stdio.h>
@@ -53,6 +57,18 @@ jobs:
           static int current_fb = 0;
           static gcmContextData *gcm_ctx = NULL;
           static void *host_addr = NULL;
+
+          static int check_assets_present(void) {
+              FILE *fp = fopen("/dev_hdd0/game/POPT00001/USRDIR/assets/Factory_Hub_opt.bin", "rb");
+              if (!fp) {
+                  fp = fopen("assets/Factory_Hub_opt.bin", "rb");
+              }
+              if (fp) {
+                  fclose(fp);
+                  return 1;
+              }
+              return 0;
+          }
 
           static int init_video(void) {
               host_addr = memalign(1024 * 1024, 1024 * 1024);
@@ -102,6 +118,7 @@ jobs:
           int main(void) {
               ioPadInit(7);
               int vid_ok = (init_video() == 0);
+              int assets_ok = check_assets_present();
               u32 tick = 0;
 
               while (1) {
@@ -120,15 +137,17 @@ jobs:
                   if (vid_ok && frame_buffers[current_fb]) {
                       u32 *fb = frame_buffers[current_fb];
                       u32 stride = frame_pitch / 4;
+                      /* Verde se achou os assets no USRDIR/assets, vermelho se nao achou */
+                      u32 top_color = assets_ok ? 0xFF1E8E3E : 0xFFD93025;
                       for (u32 y = 0; y < screen_h; y++) {
-                          u32 color = (y < screen_h / 8) ? 0xFF1E8E3E : 0xFF202630;
+                          u32 color = (y < screen_h / 6) ? top_color : 0xFF202630;
                           for (u32 x = 0; x < screen_w; x++) {
                               fb[y * stride + x] = color;
                           }
                       }
                       u32 box_x = (tick * 8) % (screen_w > 64 ? screen_w - 64 : 1);
-                      for (u32 y = screen_h / 4; y < screen_h / 4 + 48 && y < screen_h; y++) {
-                          for (u32 x = box_x; x < box_x + 48 && x < screen_w; x++) {
+                      for (u32 y = screen_h / 3; y < screen_h / 3 + 64 && y < screen_h; y++) {
+                          for (u32 x = box_x; x < box_x + 64 && x < screen_w; x++) {
                               fb[y * stride + x] = 0xFFF9AB00;
                           }
                       }
@@ -149,14 +168,12 @@ jobs:
           MAIN_EOF
           fi
 
-          # sfo.xml: usa o do repo, senao copia do SDK da imagem
           if [ ! -f sfo.xml ]; then
             SFO=$(find "$PS3DEV" -name sfo.xml 2>/dev/null | head -1)
             echo "sfo.xml encontrado em: $SFO"
             if [ -n "$SFO" ]; then cp "$SFO" sfo.xml; fi
           fi
 
-          # gera um ICON0.PNG 320x176 simples se nao existir
           if [ ! -f ICON0.PNG ]; then
             python3 - <<'PY'
           import zlib, struct
@@ -177,9 +194,33 @@ jobs:
 
           make pkg 2>&1 | tail -n 100
 
+          # Monta diretorio completo com USRDIR/assets para o PKG incluir os ativos (~19 MB)
+          PKG_DIR="pkg_stage/UP0001-POPT00001_00-0000000000000000"
+          rm -rf pkg_stage
+          mkdir -p "$PKG_DIR/USRDIR/assets"
+
+          SELF_FILE=$(find . -maxdepth 3 -name "*.self" -o -name "EBOOT.BIN" | head -1)
+          SFO_FILE=$(find . -maxdepth 3 -name "PARAM.SFO" | head -1)
+          if [ -n "$SELF_FILE" ]; then
+            cp -f "$SELF_FILE" "$PKG_DIR/USRDIR/EBOOT.BIN"
+          fi
+          if [ -n "$SFO_FILE" ]; then
+            cp -f "$SFO_FILE" "$PKG_DIR/PARAM.SFO"
+          fi
+          if [ -f ICON0.PNG ]; then
+            cp -f ICON0.PNG "$PKG_DIR/ICON0.PNG"
+          fi
+          if [ -d data/native_assets ]; then
+            cp -r data/native_assets/. "$PKG_DIR/USRDIR/assets/"
+          fi
+
+          if command -v pkg.py >/dev/null 2>&1; then
+            pkg.py "$PKG_DIR" || true
+          fi
+
           mkdir -p dist
-          find . -maxdepth 3 -name "*.pkg" -not -path "./dist/*" -exec cp {} dist/ \;
-          ls -la dist || true
+          find . -maxdepth 3 -name "*.pkg" -not -path "./dist/*" -exec cp -f {} dist/ \;
+          ls -lh dist || true
           EOF
 
       - name: Compilar dentro da imagem ps3dev
