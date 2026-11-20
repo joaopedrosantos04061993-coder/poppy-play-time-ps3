@@ -13,9 +13,15 @@ jobs:
 
       - name: Extrair os zips
         run: |
+          ls -la
           for z in *.zip; do
-            [ -f "$z" ] && unzip -q -o "$z"
+            if [ -f "$z" ]; then
+              echo "Extraindo $z..."
+              unzip -q -o "$z"
+            fi
           done
+          echo "=== Pastas apos extrair ==="
+          find . -maxdepth 3 -not -path '*/.*'
 
       - name: Criar script de build
         run: |
@@ -27,11 +33,23 @@ jobs:
 
           mkdir -p src data/native_assets
 
-          # Copia ativos otimizados (se vieram do zip)
-          D=$(find . -maxdepth 3 -type d -name factory_portable_opt | head -1)
-          if [ -n "$D" ]; then
-            cp -r "$D"/. data/native_assets/
-          fi
+          # Procura qualquer pasta de assets extraida
+          for d in factory_portable_opt factory_portable assets native_assets; do
+            FOUND_DIR=$(find . -maxdepth 3 -type d -name "$d" | head -1)
+            if [ -n "$FOUND_DIR" ]; then
+              echo "Copiando assets de: $FOUND_DIR"
+              cp -r "$FOUND_DIR"/. data/native_assets/
+            fi
+          done
+
+          # Copia quaisquer .bin / .png / .obj / .mtl / .json soltos do zip para data/native_assets
+          find . -maxdepth 3 \( -name "*.bin" -o -name "*.png" -o -name "*.obj" -o -name "*.mtl" -o -name "*.json" \) \
+            -not -path "./data/*" -not -path "./build/*" -not -path "./pkg_stage/*" \
+            -exec cp -f {} data/native_assets/ \; 2>/dev/null || true
+
+          echo "=== Conteudo de data/native_assets ==="
+          du -sh data/native_assets || true
+          ls -lh data/native_assets | head -n 30 || true
 
           L=$(find . -maxdepth 3 -type f -name factory_fluid_loader.c | head -1)
           if [ -n "$L" ] && [ ! -f src/factory_fluid_loader.c ]; then
@@ -58,13 +76,8 @@ jobs:
           static gcmContextData *gcm_ctx = NULL;
           static void *host_addr = NULL;
 
-          static int check_assets_present(void) {
-              FILE *fp = fopen("/dev_hdd0/game/POPT00001/USRDIR/assets/Factory_Hub_opt.bin", "rb");
-              if (!fp) {
-                  fp = fopen("assets/Factory_Hub_opt.bin", "rb");
-              }
-              if (fp) {
-                  fclose(fp);
+          static int try_resolution(u16 res_id, videoResolution *res_out) {
+              if (videoGetResolution(res_id, res_out) == 0 && res_out->width > 0 && res_out->height > 0) {
                   return 1;
               }
               return 0;
@@ -76,15 +89,31 @@ jobs:
               if (rsxInit(&gcm_ctx, 64 * 1024, 1024 * 1024, host_addr) != 0) return -2;
 
               videoState state;
-              if (videoGetState(0, 0, &state) != 0) return -3;
+              videoGetState(0, 0, &state);
 
               videoResolution res;
-              u16 res_id = VIDEO_RESOLUTION_720;
-              if (videoGetResolution(res_id, &res) != 0) {
-                  res_id = VIDEO_RESOLUTION_480;
-                  if (videoGetResolution(res_id, &res) != 0) {
-                      return -4;
+              memset(&res, 0, sizeof(res));
+              u16 res_id = 0;
+
+              u16 candidates[] = {
+                  VIDEO_RESOLUTION_720,
+                  VIDEO_RESOLUTION_480,
+                  VIDEO_RESOLUTION_576,
+                  VIDEO_RESOLUTION_1080
+              };
+
+              int found = 0;
+              for (int i = 0; i < 4; i++) {
+                  if (try_resolution(candidates[i], &res)) {
+                      res_id = candidates[i];
+                      found = 1;
+                      break;
                   }
+              }
+              if (!found) {
+                  res.width = 1280;
+                  res.height = 720;
+                  res_id = VIDEO_RESOLUTION_720;
               }
 
               screen_w = res.width;
@@ -97,7 +126,10 @@ jobs:
               vconfig.pitch = res.width * 4;
               vconfig.aspect = VIDEO_ASPECT_16_9;
 
-              if (videoConfigure(0, &vconfig, NULL, 0) != 0) return -5;
+              if (videoConfigure(0, &vconfig, NULL, 0) != 0) {
+                  vconfig.aspect = VIDEO_ASPECT_4_3;
+                  videoConfigure(0, &vconfig, NULL, 0);
+              }
 
               frame_pitch = vconfig.pitch;
               u32 fb_size = frame_pitch * res.height;
@@ -105,7 +137,7 @@ jobs:
               for (int i = 0; i < 2; i++) {
                   frame_buffers[i] = (u32 *)rsxMemalign(64, fb_size);
                   if (!frame_buffers[i]) return -6;
-                  memset(frame_buffers[i], 0x20, fb_size);
+                  memset(frame_buffers[i], 0xFF, fb_size);
                   u32 offset = 0;
                   rsxAddressToOffset(frame_buffers[i], &offset);
                   gcmSetDisplayBuffer((u8)i, offset, frame_pitch, res.width, res.height);
@@ -118,7 +150,6 @@ jobs:
           int main(void) {
               ioPadInit(7);
               int vid_ok = (init_video() == 0);
-              int assets_ok = check_assets_present();
               u32 tick = 0;
 
               while (1) {
@@ -134,21 +165,19 @@ jobs:
                       }
                   }
 
-                  if (vid_ok && frame_buffers[current_fb]) {
+                  if (frame_buffers[current_fb]) {
                       u32 *fb = frame_buffers[current_fb];
                       u32 stride = frame_pitch / 4;
-                      /* Verde se achou os assets no USRDIR/assets, vermelho se nao achou */
-                      u32 top_color = assets_ok ? 0xFF1E8E3E : 0xFFD93025;
+                      u32 bg = vid_ok ? 0xFF1A237E : 0xFF4A148C;
                       for (u32 y = 0; y < screen_h; y++) {
-                          u32 color = (y < screen_h / 6) ? top_color : 0xFF202630;
                           for (u32 x = 0; x < screen_w; x++) {
-                              fb[y * stride + x] = color;
+                              fb[y * stride + x] = bg;
                           }
                       }
-                      u32 box_x = (tick * 8) % (screen_w > 64 ? screen_w - 64 : 1);
-                      for (u32 y = screen_h / 3; y < screen_h / 3 + 64 && y < screen_h; y++) {
-                          for (u32 x = box_x; x < box_x + 64 && x < screen_w; x++) {
-                              fb[y * stride + x] = 0xFFF9AB00;
+                      u32 box_x = (tick * 10) % (screen_w > 80 ? screen_w - 80 : 1);
+                      for (u32 y = screen_h / 3; y < screen_h / 3 + 80 && y < screen_h; y++) {
+                          for (u32 x = box_x; x < box_x + 80 && x < screen_w; x++) {
+                              fb[y * stride + x] = 0xFFFFD600;
                           }
                       }
                       gcmSetFlip(gcm_ctx, current_fb);
@@ -170,7 +199,6 @@ jobs:
 
           if [ ! -f sfo.xml ]; then
             SFO=$(find "$PS3DEV" -name sfo.xml 2>/dev/null | head -1)
-            echo "sfo.xml encontrado em: $SFO"
             if [ -n "$SFO" ]; then cp "$SFO" sfo.xml; fi
           fi
 
@@ -187,32 +215,23 @@ jobs:
           PY
           fi
 
-          if [ ! -f Makefile ]; then
-            echo "ERRO: Makefile nao encontrado na raiz do repositorio"
-            exit 1
-          fi
+          make pkg 2>&1 | tail -n 80
 
-          make pkg 2>&1 | tail -n 100
-
-          # Monta diretorio completo com USRDIR/assets para o PKG incluir os ativos (~19 MB)
           PKG_DIR="pkg_stage/UP0001-POPT00001_00-0000000000000000"
           rm -rf pkg_stage
           mkdir -p "$PKG_DIR/USRDIR/assets"
 
-          SELF_FILE=$(find . -maxdepth 3 -name "*.self" -o -name "EBOOT.BIN" | head -1)
+          SELF_FILE=$(find . -maxdepth 3 \( -name "*.self" -o -name "EBOOT.BIN" \) | head -1)
           SFO_FILE=$(find . -maxdepth 3 -name "PARAM.SFO" | head -1)
-          if [ -n "$SELF_FILE" ]; then
-            cp -f "$SELF_FILE" "$PKG_DIR/USRDIR/EBOOT.BIN"
-          fi
-          if [ -n "$SFO_FILE" ]; then
-            cp -f "$SFO_FILE" "$PKG_DIR/PARAM.SFO"
-          fi
-          if [ -f ICON0.PNG ]; then
-            cp -f ICON0.PNG "$PKG_DIR/ICON0.PNG"
-          fi
-          if [ -d data/native_assets ]; then
-            cp -r data/native_assets/. "$PKG_DIR/USRDIR/assets/"
-          fi
+          echo "SELF_FILE=$SELF_FILE | SFO_FILE=$SFO_FILE"
+
+          [ -n "$SELF_FILE" ] && cp -f "$SELF_FILE" "$PKG_DIR/USRDIR/EBOOT.BIN"
+          [ -n "$SFO_FILE" ] && cp -f "$SFO_FILE" "$PKG_DIR/PARAM.SFO"
+          [ -f ICON0.PNG ] && cp -f ICON0.PNG "$PKG_DIR/ICON0.PNG"
+          cp -r data/native_assets/. "$PKG_DIR/USRDIR/assets/" 2>/dev/null || true
+
+          echo "=== Tamanho de PKG_DIR antes do pkg.py ==="
+          du -sh "$PKG_DIR" || true
 
           if command -v pkg.py >/dev/null 2>&1; then
             pkg.py "$PKG_DIR" || true
@@ -220,6 +239,7 @@ jobs:
 
           mkdir -p dist
           find . -maxdepth 3 -name "*.pkg" -not -path "./dist/*" -exec cp -f {} dist/ \;
+          echo "=== Arquivos em dist ==="
           ls -lh dist || true
           EOF
 
