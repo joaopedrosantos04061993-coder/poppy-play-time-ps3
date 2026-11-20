@@ -33,9 +33,12 @@ jobs:
 
           mkdir -p src data/native_assets
 
-          # Procura qualquer pasta de assets extraida
+          # Procura qualquer pasta de assets extraida (ignorando data/native_assets, pkg_stage e dist)
           for d in factory_portable_opt factory_portable assets native_assets; do
-            FOUND_DIR=$(find . -maxdepth 3 -type d -name "$d" | head -1)
+            FOUND_DIR=$(find . -maxdepth 3 -type d -name "$d" \
+              -not -path "./data/native_assets*" \
+              -not -path "./pkg_stage*" \
+              -not -path "./dist*" | head -1)
             if [ -n "$FOUND_DIR" ]; then
               echo "Copiando assets de: $FOUND_DIR"
               cp -r "$FOUND_DIR"/. data/native_assets/
@@ -44,7 +47,7 @@ jobs:
 
           # Copia quaisquer .bin / .png / .obj / .mtl / .json soltos do zip para data/native_assets
           find . -maxdepth 3 \( -name "*.bin" -o -name "*.png" -o -name "*.obj" -o -name "*.mtl" -o -name "*.json" \) \
-            -not -path "./data/*" -not -path "./build/*" -not -path "./pkg_stage/*" \
+            -not -path "./data/*" -not -path "./build/*" -not -path "./pkg_stage/*" -not -path "./dist/*" \
             -exec cp -f {} data/native_assets/ \; 2>/dev/null || true
 
           echo "=== Conteudo de data/native_assets ==="
