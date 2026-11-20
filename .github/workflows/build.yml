@@ -38,7 +38,6 @@ jobs:
 
           mkdir -p src data/native_assets build/pkg_dir/USRDIR
 
-          # Copia ativos e carregador se vieram do ZIP otimizado ou do ZIP original
           if [ -d "factory_portable_opt" ]; then
             cp -r factory_portable_opt/. data/native_assets/
           fi
@@ -49,7 +48,6 @@ jobs:
             cp src_opt/factory_fluid_loader.c src/factory_fluid_loader.c
           fi
 
-          # Se nao existir main.c no projeto, cria um minimo com saida visual para evitar tela preta no HEN
           if [ ! -f "src/main.c" ]; then
             cat > src/main.c <<'MAIN_EOF'
           #include <stdio.h>
@@ -57,7 +55,6 @@ jobs:
           #include <string.h>
           #include <unistd.h>
           #include <malloc.h>
-          #include <sysmodule.h>
           #include <rsx/rsx.h>
           #include <io/pad.h>
 
@@ -157,7 +154,6 @@ jobs:
           MAIN_EOF
           fi
 
-          # Se nao existir Makefile nem Makefile.ps3, cria um padrao para compilar ELF e preparar PKG
           if [ ! -f "Makefile" ] && [ ! -f "Makefile.ps3" ]; then
             cat > Makefile <<'MK_EOF'
           PS3DEV ?= /usr/local/ps3dev
