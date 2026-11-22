@@ -1,257 +1,119 @@
-name: Build Poppy Playtime PS3 PKG
+name: Build PS3 PKG from ZIP
 
 on:
-  push:
   workflow_dispatch:
+
+concurrency:
+  group: ps3-zip-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
-      - name: Baixar o projeto
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extrair os zips
+      - name: Install host tools
+        shell: bash
         run: |
-          ls -la
-          for z in *.zip; do
-            if [ -f "$z" ]; then
-              echo "Extraindo $z..."
-              unzip -q -o "$z"
-            fi
-          done
-          echo "=== Pastas apos extrair ==="
-          find . -maxdepth 3 -not -path '*/.*'
+          set -Eeuo pipefail
+          test "$(uname -m)" = "x86_64"
+          sudo apt-get update
+          sudo apt-get install -y python3 unzip zip curl ca-certificates
 
-      - name: Criar script de build
+      - name: Extract project ZIP
+        shell: bash
         run: |
-          cat > build.sh <<'EOF'
-          set -e
-          : "${PS3DEV:=/usr/local/ps3dev}"; export PS3DEV
-          export PSL1GHT="$PS3DEV"
-          export PATH="$PATH:$PS3DEV/bin:$PS3DEV/ppu/bin:$PS3DEV/spu/bin"
+          set -Eeuo pipefail
+          ZIP_FILE="$(find . -maxdepth 1 -type f -iname '*.zip' -printf '%T@ %p\n' | sort -nr | sed -n '1s/^[^ ]* //p')"
+          test -n "$ZIP_FILE"
+          rm -rf /tmp/poppy-source
+          unzip -q "$ZIP_FILE" -d /tmp/poppy-source
+          PROJECT="$(find /tmp/poppy-source -maxdepth 2 -type f -name Makefile -printf '%h\n' | head -n1)"
+          test -n "$PROJECT"
+          test -f "$PROJECT/source/main.c"
+          grep -q '^main.o:' "$PROJECT/Makefile"
+          grep -q -- '-I\$(CURDIR)' "$PROJECT/Makefile"
+          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
 
-          mkdir -p src data/native_assets
+      - name: Install complete PS3DEV SDK
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo mkdir -p /opt/ps3dev
+          sudo chown "$USER:$USER" /opt/ps3dev
+          curl -fL --retry 5 --retry-all-errors \
+            -o /tmp/ps3dev.tar.gz \
+            https://github.com/ps3dev/ps3dev/releases/download/nightly-2026-11-16/ps3dev-linux-X64.tar.gz
+          echo '1d4a518cd0afc05dd75246d71ca016d8f8aa918ba3ec452ba92b865137afe054  /tmp/ps3dev.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/ps3dev.tar.gz -C /opt/ps3dev --strip-components=1
+          echo "PS3DEV=/opt/ps3dev" >> "$GITHUB_ENV"
+          echo "PSL1GHT=/opt/ps3dev" >> "$GITHUB_ENV"
+          echo "/opt/ps3dev/bin" >> "$GITHUB_PATH"
+          echo "/opt/ps3dev/ppu/bin" >> "$GITHUB_PATH"
+          echo "/opt/ps3dev/spu/bin" >> "$GITHUB_PATH"
+          export PS3DEV=/opt/ps3dev
+          export PSL1GHT=/opt/ps3dev
+          export PATH="/opt/ps3dev/bin:/opt/ps3dev/ppu/bin:/opt/ps3dev/spu/bin:$PATH"
+          test -s /opt/ps3dev/ppu/lib/librsx.a
+          command -v ppu-gcc
+          command -v cgcomp
+          command -v fself
+          command -v sfo
+          command -v pkg
 
-          # Procura qualquer pasta de assets extraida (ignorando data/native_assets, pkg_stage e dist)
-          for d in factory_portable_opt factory_portable assets native_assets; do
-            FOUND_DIR=$(find . -maxdepth 3 -type d -name "$d" \
-              -not -path "./data/native_assets*" \
-              -not -path "./pkg_stage*" \
-              -not -path "./dist*" | head -1)
-            if [ -n "$FOUND_DIR" ]; then
-              echo "Copiando assets de: $FOUND_DIR"
-              cp -r "$FOUND_DIR"/. data/native_assets/
-            fi
-          done
-
-          # Copia quaisquer .bin / .png / .obj / .mtl / .json soltos do zip para data/native_assets
-          find . -maxdepth 3 \( -name "*.bin" -o -name "*.png" -o -name "*.obj" -o -name "*.mtl" -o -name "*.json" \) \
-            -not -path "./data/*" -not -path "./build/*" -not -path "./pkg_stage/*" -not -path "./dist/*" \
-            -exec cp -f {} data/native_assets/ \; 2>/dev/null || true
-
-          echo "=== Conteudo de data/native_assets ==="
-          du -sh data/native_assets || true
-          ls -lh data/native_assets | head -n 30 || true
-
-          L=$(find . -maxdepth 3 -type f -name factory_fluid_loader.c | head -1)
-          if [ -n "$L" ] && [ ! -f src/factory_fluid_loader.c ]; then
-            cp "$L" src/factory_fluid_loader.c
+      - name: Install NVIDIA Cg Toolkit runtime
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -rf /opt/cg /tmp/cg-package /tmp/cg.tgz
+          sudo mkdir -p /opt/cg
+          sudo chown "$USER:$USER" /opt/cg
+          curl -fL --retry 10 --retry-all-errors --retry-delay 2 \
+            -o /tmp/cg.tgz \
+            https://developer.download.nvidia.com/cg/Cg_3.1/Cg-3.1_April2012_x86_64.tgz
+          tar -xzf /tmp/cg.tgz -C /opt/cg
+          CGC="$(find /opt/cg -type f -name cgc -perm -111 | head -n1)"
+          CG_LIB_FILE="$(find /opt/cg -type f -name 'libCg.so' ! -path '*/Trace/*' ! -path '*/trace/*' | head -n1)"
+          if [ -z "$CG_LIB_FILE" ]; then
+            CG_LIB_FILE="$(find /opt/cg -type f -name 'libCg.so.*' ! -path '*/Trace/*' ! -path '*/trace/*' | head -n1)"
           fi
+          test -n "$CGC"
+          test -n "$CG_LIB_FILE"
+          CG_LIB="$(dirname "$CG_LIB_FILE")"
+          sudo ln -sf "$CG_LIB_FILE" /usr/lib/libCg.so
+          sudo ldconfig
+          echo "$(dirname "$CGC")" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=/usr/lib:$CG_LIB:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          export PATH="$(dirname "$CGC"):$PATH"
+          export LD_LIBRARY_PATH="/usr/lib:$CG_LIB:${LD_LIBRARY_PATH:-}"
+          test -e /usr/lib/libCg.so
+          command -v cgc
 
-          if [ ! -f "src/main.c" ]; then
-            cat > src/main.c <<'MAIN_EOF'
-          #include <stdio.h>
-          #include <stdlib.h>
-          #include <string.h>
-          #include <unistd.h>
-          #include <malloc.h>
-          #include <rsx/rsx.h>
-          #include <sysutil/video.h>
-          #include <io/pad.h>
-          #include <tiny3d.h>
+      - name: Build EBOOT and PKG
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd "$PROJECT"
+          timeout 30m bash tools/build.sh
+          test -s poppy_ps3.elf
+          timeout 10m bash tools/package.sh
+          test -s dist/app_home/USRDIR/EBOOT.BIN
+          test -s dist/PoppyPlaytime_Capitulo1_PS3.pkg
+          stat -c '%s bytes  %n' dist/app_home/USRDIR/EBOOT.BIN dist/PoppyPlaytime_Capitulo1_PS3.pkg
 
-          static u32 *frame_buffers[2] = {NULL, NULL};
-          static u32 frame_pitch = 0;
-          static u32 screen_w = 1280;
-          static u32 screen_h = 720;
-          static int current_fb = 0;
-          static gcmContextData *gcm_ctx = NULL;
-          static void *host_addr = NULL;
-
-          static int try_resolution(u16 res_id, videoResolution *res_out) {
-              if (videoGetResolution(res_id, res_out) == 0 && res_out->width > 0 && res_out->height > 0) {
-                  return 1;
-              }
-              return 0;
-          }
-
-          static int init_video(void) {
-              host_addr = memalign(1024 * 1024, 1024 * 1024);
-              if (!host_addr) return -1;
-              if (rsxInit(&gcm_ctx, 64 * 1024, 1024 * 1024, host_addr) != 0) return -2;
-
-              videoState state;
-              videoGetState(0, 0, &state);
-
-              videoResolution res;
-              memset(&res, 0, sizeof(res));
-              u16 res_id = 0;
-
-              u16 candidates[] = {
-                  VIDEO_RESOLUTION_720,
-                  VIDEO_RESOLUTION_480,
-                  VIDEO_RESOLUTION_576,
-                  VIDEO_RESOLUTION_1080
-              };
-
-              int found = 0;
-              for (int i = 0; i < 4; i++) {
-                  if (try_resolution(candidates[i], &res)) {
-                      res_id = candidates[i];
-                      found = 1;
-                      break;
-                  }
-              }
-              if (!found) {
-                  res.width = 1280;
-                  res.height = 720;
-                  res_id = VIDEO_RESOLUTION_720;
-              }
-
-              screen_w = res.width;
-              screen_h = res.height;
-
-              videoConfiguration vconfig;
-              memset(&vconfig, 0, sizeof(vconfig));
-              vconfig.resolution = res_id;
-              vconfig.format = VIDEO_BUFFER_FORMAT_XRGB;
-              vconfig.pitch = res.width * 4;
-              vconfig.aspect = VIDEO_ASPECT_16_9;
-
-              if (videoConfigure(0, &vconfig, NULL, 0) != 0) {
-                  vconfig.aspect = VIDEO_ASPECT_4_3;
-                  videoConfigure(0, &vconfig, NULL, 0);
-              }
-
-              frame_pitch = vconfig.pitch;
-              u32 fb_size = frame_pitch * res.height;
-
-              for (int i = 0; i < 2; i++) {
-                  frame_buffers[i] = (u32 *)rsxMemalign(64, fb_size);
-                  if (!frame_buffers[i]) return -6;
-                  memset(frame_buffers[i], 0xFF, fb_size);
-                  u32 offset = 0;
-                  rsxAddressToOffset(frame_buffers[i], &offset);
-                  gcmSetDisplayBuffer((u8)i, offset, frame_pitch, res.width, res.height);
-              }
-
-              gcmSetFlipMode(GCM_FLIP_VSYNC);
-              return 0;
-          }
-
-          int main(void) {
-              ioPadInit(7);
-              int vid_ok = (init_video() == 0);
-              u32 tick = 0;
-
-              while (1) {
-                  padInfo padinfo;
-                  padData paddata;
-                  ioPadGetInfo(&padinfo);
-                  for (int i = 0; i < MAX_PADS; i++) {
-                      if (padinfo.status[i]) {
-                          ioPadGetData(i, &paddata);
-                          if (paddata.button[PAD_BUTTON_OFFSET_DIGITAL2] & PAD_CTRL_START) {
-                              goto done;
-                          }
-                      }
-                  }
-
-                  if (frame_buffers[current_fb]) {
-                      u32 *fb = frame_buffers[current_fb];
-                      u32 stride = frame_pitch / 4;
-                      u32 bg = vid_ok ? 0xFF1A237E : 0xFF4A148C;
-                      for (u32 y = 0; y < screen_h; y++) {
-                          for (u32 x = 0; x < screen_w; x++) {
-                              fb[y * stride + x] = bg;
-                          }
-                      }
-                      u32 box_x = (tick * 10) % (screen_w > 80 ? screen_w - 80 : 1);
-                      for (u32 y = screen_h / 3; y < screen_h / 3 + 80 && y < screen_h; y++) {
-                          for (u32 x = box_x; x < box_x + 80 && x < screen_w; x++) {
-                              fb[y * stride + x] = 0xFFFFD600;
-                          }
-                      }
-                      gcmSetFlip(gcm_ctx, current_fb);
-                      rsxFlushBuffer(gcm_ctx);
-                      gcmSetWaitFlip(gcm_ctx);
-                      current_fb ^= 1;
-                  }
-
-                  tick++;
-                  usleep(16666);
-              }
-
-          done:
-              ioPadEnd();
-              return 0;
-          }
-          MAIN_EOF
-          fi
-
-          if [ ! -f sfo.xml ]; then
-            SFO=$(find "$PS3DEV" -name sfo.xml 2>/dev/null | head -1)
-            if [ -n "$SFO" ]; then cp "$SFO" sfo.xml; fi
-          fi
-
-          if [ ! -f ICON0.PNG ]; then
-            python3 - <<'PY'
-          import zlib, struct
-          w, h = 320, 176
-          raw = b"".join(b"\x00" + b"\x1e\x8e\x3e" * w for _ in range(h))
-          def chunk(t, d):
-              c = struct.pack(">I", len(d)) + t + d
-              return c + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
-          png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
-          open("ICON0.PNG", "wb").write(png)
-          PY
-          fi
-
-          make pkg 2>&1 | tail -n 80
-
-          PKG_DIR="pkg_stage/UP0001-POPT00001_00-0000000000000000"
-          rm -rf pkg_stage
-          mkdir -p "$PKG_DIR/USRDIR/assets"
-
-          SELF_FILE=$(find . -maxdepth 3 \( -name "*.self" -o -name "EBOOT.BIN" \) | head -1)
-          SFO_FILE=$(find . -maxdepth 3 -name "PARAM.SFO" | head -1)
-          echo "SELF_FILE=$SELF_FILE | SFO_FILE=$SFO_FILE"
-
-          [ -n "$SELF_FILE" ] && cp -f "$SELF_FILE" "$PKG_DIR/USRDIR/EBOOT.BIN"
-          [ -n "$SFO_FILE" ] && cp -f "$SFO_FILE" "$PKG_DIR/PARAM.SFO"
-          [ -f ICON0.PNG ] && cp -f ICON0.PNG "$PKG_DIR/ICON0.PNG"
-          cp -r data/native_assets/. "$PKG_DIR/USRDIR/assets/" 2>/dev/null || true
-
-          echo "=== Tamanho de PKG_DIR antes do pkg.py ==="
-          du -sh "$PKG_DIR" || true
-
-          if command -v pkg.py >/dev/null 2>&1; then
-            pkg.py "$PKG_DIR" || true
-          fi
-
-          mkdir -p dist
-          find . -maxdepth 3 -name "*.pkg" -not -path "./dist/*" -exec cp -f {} dist/ \;
-          echo "=== Arquivos em dist ==="
-          ls -lh dist || true
-          EOF
-
-      - name: Compilar dentro da imagem ps3dev
-        run: docker run --rm -v "$PWD":/build -w /build hldtux/ps3dev-sdl2:latest sh build.sh
-
-      - name: Enviar o .pkg
+      - name: Upload PKG and diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: PoppyPlaytimePS3-pkg
-          path: dist/*.pkg
+          name: PoppyPlaytime-PS3-build
           if-no-files-found: warn
+          path: |
+            /tmp/poppy-source/**/dist/**
+            /tmp/poppy-source/**/poppy_ps3.elf
+            /tmp/poppy-source/**/build/**
