@@ -104,7 +104,19 @@ jobs:
           test -s poppy_ps3.elf
           timeout 10m bash tools/package.sh
           test -s dist/app_home/USRDIR/EBOOT.BIN
+          test -s dist/app_home/PARAM.SFO
+          test -s dist/app_home/ICON0.PNG
+          test -s dist/app_home/PIC1.PNG
+          test -s dist/app_home/USRDIR/data/menu_bg.raw
+          test -s dist/app_home/USRDIR/data/chapter_bg.raw
+          test -s dist/app_home/USRDIR/data/font.raw
           test -s dist/PoppyPlaytime_Capitulo1_PS3.pkg
+          APP_BYTES="$(du -sb dist/app_home | cut -f1)"
+          PKG_BYTES="$(stat -c '%s' dist/PoppyPlaytime_Capitulo1_PS3.pkg)"
+          echo "app_home=$APP_BYTES bytes"
+          echo "pkg=$PKG_BYTES bytes"
+          test "$APP_BYTES" -gt 7000000
+          test "$PKG_BYTES" -gt 1000000
           stat -c '%s bytes  %n' dist/app_home/USRDIR/EBOOT.BIN dist/PoppyPlaytime_Capitulo1_PS3.pkg
 
       - name: Upload PKG and diagnostics
